@@ -1,0 +1,287 @@
+import RPi.GPIO as GPIO
+import time
+import threading
+import cv2
+import os
+import numpy as np
+import shutil
+import paho.mqtt.client as mqtt
+
+GPIO.setmode(GPIO.BOARD)
+motor1 = 16
+motor2 = 18
+motor3 = 22
+motor4 = 24
+
+GPIO.setup(motor1,GPIO.OUT)
+GPIO.setup(motor2,GPIO.OUT)
+GPIO.setup(motor3,GPIO.OUT)
+GPIO.setup(motor4,GPIO.OUT)
+trigger_pin1 = 11
+echo_pin1 = 13
+GPIO.setup(trigger_pin1, GPIO.OUT)
+GPIO.setup(echo_pin1, GPIO.IN)
+trigger_pin2 = 15
+echo_pin2 = 19
+GPIO.setup(trigger_pin2, GPIO.OUT)
+GPIO.setup(echo_pin2, GPIO.IN)
+trigger_pin3 = 21
+echo_pin3 = 23
+GPIO.setup(trigger_pin3, GPIO.OUT)
+GPIO.setup(echo_pin3, GPIO.IN)
+vaccum_pin= 10
+cleaning_pin=37
+GPIO.setup(vaccum_pin, GPIO.OUT)
+GPIO.setup(cleaning_pin, GPIO.OUT)
+GPIO.output(vaccum_pin,GPIO.HIGH)
+GPIO.output(cleaning_pin,GPIO.HIGH)
+run_stat = False
+
+#def on_connect(client, userdata, flags, rc):
+#    print(f"Connected with result code {rc}")
+
+
+def on_connect(client, userdata, flags, rc):
+    print(f"Connected with result code {rc}")
+    client.subscribe("raspberry/cleaning-sub")
+
+# the callback function, it will be triggered when receiving messages
+def on_message(client, userdata, msg):
+    print(f"{msg.topic} {msg.payload.decode('utf-8')}")
+    s = msg.payload.decode('utf-8')
+    if s[0] == '0':
+        motor_stop()
+        run_stat = False
+    else:
+        motor_forward()
+        run_stat = True
+    if s[1] == '1':
+        GPIO.output(vaccum_pin,GPIO.LOW)
+    else:
+        GPIO.output(vaccum_pin,GPIO.HIGH)
+    if s[2] == '1':
+        GPIO.output(cleaning_pin,GPIO.LOW)
+    else:
+        GPIO.output(cleaning_pin,GPIO.HIGH)
+client = mqtt.Client()
+client.on_connect = on_connect
+client.on_message = on_message
+client.connect("broker.hivemq.com", 1883, 60)
+
+def mse(image1, image2):
+    err = np.sum((image1.astype("float") - image2.astype("float")) ** 2)
+    err /= float(image1.shape[0] * image1.shape[1])
+    return err
+
+def compareimages():
+    dir1 = '/home/pi/Desktop/data1'
+    dir2 = '/home/pi/Desktop/data2'
+    images1 = [os.path.join(dir1, f) for f in os.listdir(dir1) if os.path.isfile(os.path.join(dir1, f)) and f != ".DS_Store"]
+    images2 = [os.path.join(dir2, f) for f in os.listdir(dir2) if os.path.isfile(os.path.join(dir2, f)) and f != ".DS_Store"]
+    error = 0
+    for image1 in images1:
+        for image2 in images2:
+            img1 = cv2.imread(image1)
+            img2 = cv2.imread(image2)
+            img1 = cv2.resize(img1, (500, 500))
+            img2 = cv2.resize(img2, (500, 500))
+            error += mse(img1, img2)
+            
+    error /= 100
+    print(f"Similarity score: {error}")
+    reversedata()
+    return error
+
+def reversedata():
+    source_folder = "/home/pi/Desktop/data2"
+    destination_folder = "/home/pi/Desktop/data1"
+    for file in os.listdir(destination_folder):
+        file_path = os.path.join(destination_folder, file)
+        try:
+            if os.path.isfile(file_path):
+                os.unlink(file_path)
+        except Exception as e:
+            print(e)
+
+    for file in os.listdir(source_folder):
+        file_path = os.path.join(source_folder, file)
+        if os.path.isfile(file_path):
+            shutil.copy(file_path, destination_folder)
+def takeimages():
+    cap=cv2.VideoCapture(0)
+    dir_path = 'data1'
+    for i in range(5):
+        ret, frame = cap.read()
+        if ret:
+            try:
+                if not os.listdir(dir_path):
+                    cv2.imwrite('data1/frame'+str(i)+'.jpg', frame)
+                else:
+                    cv2.imwrite('data2/frame'+str(i)+'.jpg', frame)
+            except:
+                print('Some exception has occurred!')
+
+    err =  compareimages()
+    return err
+
+
+
+
+def get_distance(trigger_pin, echo_pin):
+    # Send a 10us pulse to the trigger pin
+    GPIO.output(trigger_pin, GPIO.HIGH)
+    time.sleep(0.00001)
+    GPIO.output(trigger_pin, GPIO.LOW)
+
+    # Wait for the echo pin to go high
+    start_time = time.time()
+    while GPIO.input(echo_pin) == 0:
+        if time.time() - start_time > 0.2:
+            return None
+    pulse_start = time.time()
+
+    # Wait for the echo pin to go low
+    while GPIO.input(echo_pin) == 1:
+        if time.time() - start_time > 0.1:
+            return None
+    pulse_end = time.time()
+
+    # Calculate the distance in cm
+    pulse_duration = pulse_end - pulse_start
+    speed_of_sound = 34300  # in cm/s at room temperature
+    distance = round(pulse_duration * speed_of_sound / 2, 2)
+    return distance
+
+def motor_forward():
+    GPIO.output(motor1, GPIO.HIGH)
+    GPIO.output(motor2, GPIO.LOW)
+    GPIO.output(motor3, GPIO.HIGH)
+    GPIO.output(motor4, GPIO.LOW)
+
+def motor_reverse():
+    GPIO.output(motor1, GPIO.LOW)
+    GPIO.output(motor2, GPIO.HIGH)
+    GPIO.output(motor3, GPIO.LOW)
+    GPIO.output(motor4,GPIO.HIGH)
+    
+def motor_stop():
+    GPIO.output(motor1, GPIO.LOW)
+    GPIO.output(motor2, GPIO.LOW)
+    GPIO.output(motor3, GPIO.LOW)
+    GPIO.output(motor4,GPIO.LOW)
+    
+def motor_left():
+    GPIO.output(motor1, GPIO.LOW)
+    GPIO.output(motor2, GPIO.HIGH)
+    GPIO.output(motor3, GPIO.HIGH)
+    GPIO.output(motor4, GPIO.LOW)
+
+def motor_right():
+    GPIO.output(motor1, GPIO.HIGH)
+    GPIO.output(motor2, GPIO.LOW)
+    GPIO.output(motor3, GPIO.LOW)
+    GPIO.output(motor4,GPIO.HIGH)
+def SoftRight():
+    print("Soft Right")
+    GPIO.output(motor1, GPIO.HIGH)
+    GPIO.output(motor2, GPIO.LOW)
+    GPIO.output(motor3, GPIO.HIGH)
+    GPIO.output(motor4, GPIO.HIGH)
+def SoftLeft():
+    print("Soft Left")
+    GPIO.output(motor1, GPIO.HIGH)
+    GPIO.output(motor2, GPIO.HIGH)
+    GPIO.output(motor3, GPIO.HIGH)
+    GPIO.output(motor4, GPIO.LOW)
+def reverseDrift():
+    print("reverse_Drift")
+    GPIO.output(motor1, GPIO.HIGH)
+    GPIO.output(motor2, GPIO.HIGH)
+    GPIO.output(motor3, GPIO.LOW)
+    GPIO.output(motor4, GPIO.HIGH)
+    
+def obstacle_left():
+    motor_right()
+    time.sleep(1)
+    motor_left()
+    time.sleep(1)
+    motor_forward()
+    
+def obstacle_right():
+    motor_left()
+    time.sleep(1)
+    motor_right()
+    time.sleep(1)
+    motor_forward()
+
+
+def mainloop():    
+    try:
+        e = takeimages()
+        if e < 500:
+           client.publish('raspberry/cleaning-pub', payload="[{\"name\":\"Cleaning Status\",\"data\":\"Cleaned\"}]", qos=0, retain=False)
+           motor_stop()
+        else:
+           client.publish('raspberry/cleaning-pub', payload="[{\"name\":\"Cleaning Status\",\"data\":\"Not Cleaned\"}]", qos=0, retain=False)
+            
+        while True:
+            try:
+                #motor_forward()
+                distance1 = get_distance(trigger_pin1, echo_pin1)
+                print("distance1:", distance1)
+            
+                distance2 = get_distance(trigger_pin2, echo_pin2)
+                print("distance2:", distance2)
+                
+                distance3 = get_distance(trigger_pin3, echo_pin3)
+                print("distance3:", distance3)
+                
+                if distance1<15 and distance2<15 and distance3<15:
+                    motor_stop()                                                    
+                if distance1<15 and distance2<15 and distance3>15:
+                    motor_left()
+                    time.sleep(2)
+                    SoftLeft()
+                    time.sleep()
+                    motor_forward()
+                if distance1>15 and distance2<15 and distance3<15:
+                    motor_right()
+                    time.sleep()
+                    SoftRight()
+                    time.sleep()
+                    motor_forward()
+                if distance2<15 and distance1>15 and distance3>15:
+                    reverseDrift()
+                    time.sleep(5)
+                    motor_forward()
+                if distance1>15 and distance2>15 and distance3<15:
+                    SoftRight()
+                    time.sleep(4)
+                    motor_right()
+                    time.sleep(2)
+                    motor_forward()
+                if distance1<15 and distance2>15 and distance3>15:
+                    SoftLeft()
+                    time.sleep(4)
+                    motor_left()
+                    time.sleep(2)
+                    motor_forward()
+                    
+                if run_stat== True and distance1>15 and distance2>15 and distance3>15:
+                    motor_forward()
+            
+                #GPIO.output(vaccum_pin,GPIO.HIGH)
+                #GPIO.output(cleaning_pin,GPIO.HIGH)            
+                time.sleep(1)
+            except:
+                print('Error')
+             
+
+    except KeyboardInterrupt:
+        pass        
+
+    GPIO.cleanup
+
+t1 = threading.Thread(target=mainloop)
+t1.start()
+client.loop_forever()
